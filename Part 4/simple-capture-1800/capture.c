@@ -33,11 +33,15 @@
 #include <time.h>
 
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
-#define COLOR_CONVERT
-#define HRES 320
-#define VRES 240
-#define HRES_STR "320"
-#define VRES_STR "240"
+//#define COLOR_CONVERT_RGB
+#define HRES 640
+#define VRES 480
+#define HRES_STR "640"
+#define VRES_STR "480"
+//#define HRES 320
+//#define VRES 240
+//#define HRES_STR "320"
+//#define VRES_STR "240"
 
 // Format is used by a number of functions, so made as a file global
 static struct v4l2_format fmt;
@@ -64,7 +68,7 @@ struct buffer          *buffers;
 static unsigned int     n_buffers;
 static int              out_buf;
 static int              force_format=1;
-static int              frame_count = 30;
+static int              frame_count = (30);
 
 static void errno_exit(const char *s)
 {
@@ -86,23 +90,21 @@ static int xioctl(int fh, int request, void *arg)
 }
 
 char ppm_header[]="P6\n#9999999999 sec 9999999999 msec \n"HRES_STR" "VRES_STR"\n255\n";
-char ppm_dumpname[]="test00000000.ppm";
+char ppm_dumpname[]="frames/test0000.ppm";
 
 static void dump_ppm(const void *p, int size, unsigned int tag, struct timespec *time)
 {
     int written, i, total, dumpfd;
    
-    snprintf(&ppm_dumpname[4], 9, "%08d", tag);
-    strncat(&ppm_dumpname[12], ".ppm", 5);
+    snprintf(&ppm_dumpname[11], 9, "%04d", tag);
+    strncat(&ppm_dumpname[15], ".ppm", 5);
     dumpfd = open(ppm_dumpname, O_WRONLY | O_NONBLOCK | O_CREAT, 00666);
 
     snprintf(&ppm_header[4], 11, "%010d", (int)time->tv_sec);
     strncat(&ppm_header[14], " sec ", 5);
     snprintf(&ppm_header[19], 11, "%010d", (int)((time->tv_nsec)/1000000));
     strncat(&ppm_header[29], " msec \n"HRES_STR" "VRES_STR"\n255\n", 19);
-
-    // subtract 1 because sizeof for string includes null terminator
-    written=write(dumpfd, ppm_header, sizeof(ppm_header)-1);
+    written=write(dumpfd, ppm_header, sizeof(ppm_header));
 
     total=0;
 
@@ -120,23 +122,21 @@ static void dump_ppm(const void *p, int size, unsigned int tag, struct timespec 
 
 
 char pgm_header[]="P5\n#9999999999 sec 9999999999 msec \n"HRES_STR" "VRES_STR"\n255\n";
-char pgm_dumpname[]="test00000000.pgm";
+char pgm_dumpname[]="frames/test0000.pgm";
 
 static void dump_pgm(const void *p, int size, unsigned int tag, struct timespec *time)
 {
     int written, i, total, dumpfd;
    
-    snprintf(&pgm_dumpname[4], 9, "%08d", tag);
-    strncat(&pgm_dumpname[12], ".pgm", 5);
+    snprintf(&pgm_dumpname[11], 9, "%04d", tag);
+    strncat(&pgm_dumpname[15], ".pgm", 5);
     dumpfd = open(pgm_dumpname, O_WRONLY | O_NONBLOCK | O_CREAT, 00666);
 
     snprintf(&pgm_header[4], 11, "%010d", (int)time->tv_sec);
     strncat(&pgm_header[14], " sec ", 5);
     snprintf(&pgm_header[19], 11, "%010d", (int)((time->tv_nsec)/1000000));
     strncat(&pgm_header[29], " msec \n"HRES_STR" "VRES_STR"\n255\n", 19);
-
-    // subtract 1 because sizeof for string includes null terminator
-    written=write(dumpfd, pgm_header, sizeof(pgm_header)-1);
+    written=write(dumpfd, pgm_header, sizeof(pgm_header));
 
     total=0;
 
@@ -214,8 +214,8 @@ void yuv2rgb(int y, int u, int v, unsigned char *r, unsigned char *g, unsigned c
 }
 
 
-
-unsigned int framecnt=0;
+// always ignore first 8 frames
+int framecnt=-8;
 unsigned char bigbuffer[(1280*960)];
 
 static void process_image(const void *p, int size)
@@ -244,8 +244,7 @@ static void process_image(const void *p, int size)
     else if(fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_YUYV)
     {
 
-#if defined(COLOR_CONVERT)
-        printf("Dump YUYV converted to RGB size %d\n", size);
+#if defined(COLOR_CONVERT_RGB)
        
         // Pixels are YU and YV alternating, so YUYV which is 4 bytes
         // We want RGB, so RGBRGB which is 6 bytes
@@ -257,9 +256,12 @@ static void process_image(const void *p, int size)
             yuv2rgb(y2_temp, u_temp, v_temp, &bigbuffer[newi+3], &bigbuffer[newi+4], &bigbuffer[newi+5]);
         }
 
-        dump_ppm(bigbuffer, ((size*6)/4), framecnt, &frame_time);
+        if(framecnt > -1) 
+        {
+            dump_ppm(bigbuffer, ((size*6)/4), framecnt, &frame_time);
+            printf("Dump YUYV converted to RGB size %d\n", size);
+        }
 #else
-        printf("Dump YUYV converted to YY size %d\n", size);
        
         // Pixels are YU and YV alternating, so YUYV which is 4 bytes
         // We want Y, so YY which is 2 bytes
@@ -271,7 +273,11 @@ static void process_image(const void *p, int size)
             bigbuffer[newi+1]=pptr[i+2];
         }
 
-        dump_pgm(bigbuffer, (size/2), framecnt, &frame_time);
+        if(framecnt > -1)
+        {
+            dump_pgm(bigbuffer, (size/2), framecnt, &frame_time);
+            printf("Dump YUYV converted to YY size %d\n", size);
+        }
 #endif
 
     }
@@ -404,8 +410,13 @@ static void mainloop(void)
     struct timespec read_delay;
     struct timespec time_error;
 
-    read_delay.tv_sec=0;
-    read_delay.tv_nsec=30000;
+    // Replace this with a sequencer DELAY
+    //
+    // 250 million nsec is a 250 msec delay, for 4 fps
+    // 1 sec for 1 fps
+    //
+    read_delay.tv_sec=1;
+    read_delay.tv_nsec=0;
 
     count = frame_count;
 
@@ -766,7 +777,7 @@ static void init_device(void)
 
         // Specify the Pixel Coding Formate here
 
-        // This one work for Logitech C200
+        // This one works for Logitech C200
         fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
 
         //fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_UYVY;
@@ -946,7 +957,7 @@ int main(int argc, char **argv)
         }
     }
 
-    // initialzation
+    // initialization of V4L2
     open_device();
     init_device();
     start_capturing();
@@ -954,7 +965,7 @@ int main(int argc, char **argv)
     // service loop frame read
     mainloop();
 
-    // end of frame acquistion serice
+    // shutdown of frame acquisition service
     stop_capturing();
     uninit_device();
     close_device();
