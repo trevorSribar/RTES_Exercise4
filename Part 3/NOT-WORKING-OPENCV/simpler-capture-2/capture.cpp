@@ -17,33 +17,38 @@
 using namespace cv;
 using namespace std;
 
+// defining resolution
+#define HRES 640
+#define VRES 480
+
 
 int main( int argc, char** argv )
 {
-    //creates a GUI window which is autosized to fit the image captured
+    // initializaion
     cvNamedWindow("Capture Example", CV_WINDOW_AUTOSIZE);
+    CvCapture* capture = cvCreateCameraCapture(1);
 
-    // Opens camera 0 and saves it's location
-    CvCapture* capture = cvCreateCameraCapture(0);
-
-    // creates image structure that will hold each frame of the video
+    // iteration variable
     IplImage* frame;
 
-    // frame capturing
+    // changes the width and height to match the resolution we defined
+    cvSetCaptureProperty(capture, CV_CAP_PROP_FRAME_WIDTH, HRES);
+    cvSetCaptureProperty(capture, CV_CAP_PROP_FRAME_HEIGHT, VRES);
+
     while(1)
     {
-        // grabs image from the camera
+        // pull the next frame
         frame=cvQueryFrame(capture);
      
-        // if camera is disconnected
+        // brak if there was an error w/ the camera (probably a disconnect)
         if(!frame) break;
 
-        // Renders the image captured
+        // display the image
         cvShowImage("Capture Example", frame);
 
         // waits 33ms for a keypress
         char c = cvWaitKey(33);
-        if( c == 27 ) break; // if the key pressed was the ESC key, leave the loop
+        if( c == 27 ) break; // if it was esc, break
     }
 
     // frees mem & closes the GUI

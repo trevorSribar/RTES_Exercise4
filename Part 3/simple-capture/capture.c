@@ -946,10 +946,15 @@ int main(int argc, char **argv)
         }
     }
 
+    // initialzation
     open_device();
     init_device();
     start_capturing();
+
+    // service loop frame read
     mainloop();
+
+    // end of frame acquistion serice
     stop_capturing();
     uninit_device();
     close_device();
