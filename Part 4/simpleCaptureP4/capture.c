@@ -320,12 +320,12 @@ static void process_image(const void *p, int size)
     }
     else
     {
-        printf("ERROR - unknown dump format\n");
+        //printf("ERROR - unknown dump format\n");
         syslog(LOG_PERROR, "ERROR - unknown dump format\n");
     }
 
-    int frame_msec = (int)get_elapsed_time_usec(&frame_start, &frame_end);
-    syslog(LOG_INFO, "Time elapsed to process frame %d: %d usec\n", framecnt, frame_msec);
+    int frame_usec = (int)get_elapsed_time_usec(&frame_start, &frame_end);
+    syslog(LOG_INFO, "Time elapsed to process frame %d: %d usec\n", framecnt, frame_usec);
     //fflush(stderr);
     //fprintf(stderr, ".");
     //fflush(stdout);
