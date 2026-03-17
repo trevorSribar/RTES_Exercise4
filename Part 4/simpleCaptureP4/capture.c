@@ -16,12 +16,12 @@
   Modified by Kenneth Alcineus and Trevor Sribar
  
   to get the system log, run the following command:
-  sudo grep "capture" /var/log/syslog | tail -50
+  sudo grep "capture:" /var/log/syslog | tail -150
 
   to switch between the respective PPM and PGM builds, run:
   make CDEFS="-DCOLOR_CONVERT_RGB=1"
   OR
-  make CDEFS="-DCOLOR_CONVERT_RGB=0"
+  make
  */
 
 #include <stdio.h>
@@ -81,7 +81,7 @@ struct buffer          *buffers;
 static unsigned int     n_buffers;
 static int              out_buf;
 static int              force_format=1;
-static int              frame_count = (30);
+static int              frame_count = (1808);
 
 static void errno_exit(const char *s)
 {
@@ -168,6 +168,11 @@ static void dump_pgm(const void *p, int size, unsigned int tag, struct timespec 
     
 }
 
+double get_elapsed_time_usec(struct timespec *start, struct timespec *end)
+{
+    return ((end->tv_sec - start->tv_sec) * 1000000) + 
+    ((end->tv_nsec - start->tv_nsec) / 1000);
+}
 
 void yuv2rgb_float(float y, float u, float v, 
                    unsigned char *r, unsigned char *g, unsigned char *b)
@@ -237,12 +242,13 @@ unsigned char bigbuffer[(1280*960)];
 static void process_image(const void *p, int size)
 {
     int i, newi, newsize=0;
-    struct timespec frame_time;
+    struct timespec frame_time, frame_start, frame_end;
     int y_temp, y2_temp, u_temp, v_temp;
     unsigned char *pptr = (unsigned char *)p;
 
     // record when process was called
-    clock_gettime(CLOCK_REALTIME, &frame_time);    
+    clock_gettime(CLOCK_REALTIME, &frame_time);   
+    clock_gettime(CLOCK_MONOTONIC, &frame_start); 
 
     framecnt++;
     //printf("frame %d: ", framecnt);
@@ -257,6 +263,7 @@ static void process_image(const void *p, int size)
         //printf("Dump graymap as-is size %d\n", size);
         syslog(LOG_INFO, "Dump graymap as-is size %d\n", size);
         dump_pgm(p, size, framecnt, &frame_time);
+        clock_gettime(CLOCK_MONOTONIC, &frame_end);
     }
 
     else if(fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_YUYV)
@@ -277,6 +284,7 @@ static void process_image(const void *p, int size)
         if(framecnt > -1) 
         {
             dump_ppm(bigbuffer, ((size*6)/4), framecnt, &frame_time);
+            clock_gettime(CLOCK_MONOTONIC, &frame_end);
             //printf("Dump YUYV converted to RGB size %d\n", size);
             syslog(LOG_INFO, "Dump YUYV converted to RGB size %d\n", size);
         }
@@ -295,6 +303,7 @@ static void process_image(const void *p, int size)
         if(framecnt > -1)
         {
             dump_pgm(bigbuffer, (size/2), framecnt, &frame_time);
+            clock_gettime(CLOCK_MONOTONIC, &frame_end); 
             //printf("Dump YUYV converted to YY size %d\n", size);
             syslog(LOG_INFO, "Dump YUYV converted to YY size %d\n", size);
         }
@@ -307,6 +316,7 @@ static void process_image(const void *p, int size)
         //printf("Dump RGB as-is size %d\n", size);
         syslog(LOG_INFO, "Dump RGB as-is size %d\n", size);
         dump_ppm(p, size, framecnt, &frame_time);
+        clock_gettime(CLOCK_MONOTONIC, &frame_end);
     }
     else
     {
@@ -314,6 +324,8 @@ static void process_image(const void *p, int size)
         syslog(LOG_PERROR, "ERROR - unknown dump format\n");
     }
 
+    int frame_msec = (int)get_elapsed_time_usec(&frame_start, &frame_end);
+    syslog(LOG_INFO, "Time elapsed to process frame %d: %d usec\n", framecnt, frame_msec);
     //fflush(stderr);
     //fprintf(stderr, ".");
     //fflush(stdout);
@@ -438,7 +450,7 @@ static void mainloop(void)
     // 250 million nsec is a 250 msec delay, for 4 fps
     // 1 sec for 1 fps
     //
-    read_delay.tv_sec=1;
+    read_delay.tv_sec=0;
     read_delay.tv_nsec=0;
 
     count = frame_count;
@@ -476,12 +488,12 @@ static void mainloop(void)
 
             if (read_frame())
             {
-                if(nanosleep(&read_delay, &time_error) != 0)
-                    perror("nanosleep");
-                else
-                    //printf("time_error.tv_sec=%ld, time_error.tv_nsec=%ld\n", time_error.tv_sec, time_error.tv_nsec);
-                    syslog(LOG_INFO, "time_error.tv_sec=%ld, time_error.tv_nsec=%ld\n", time_error.tv_sec, time_error.tv_nsec);
-
+                // if(nanosleep(&read_delay, &time_error) != 0)
+                //     perror("nanosleep");
+                // else
+                //     //printf("time_error.tv_sec=%ld, time_error.tv_nsec=%ld\n", time_error.tv_sec, time_error.tv_nsec);
+                //     syslog(LOG_INFO, "time_error.tv_sec=%ld, time_error.tv_nsec=%ld\n", time_error.tv_sec, time_error.tv_nsec);
+                syslog(LOG_INFO, "time_error.tv_sec=%ld, time_error.tv_nsec=%ld\n", time_error.tv_sec, time_error.tv_nsec);
                 count--;
                 break;
             }
