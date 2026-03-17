@@ -17,6 +17,8 @@ all:	capture
 clean:
 	-rm -f *.o *.d
 	-rm -f capture
+	-rm -f frames/norm*
+	-rm -f frames/tran*
 
 distclean:
 	-rm -f *.o *.d

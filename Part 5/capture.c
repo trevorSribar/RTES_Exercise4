@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <sched.h>
 
 #include <getopt.h>             /* getopt_long() */
 
@@ -34,18 +35,21 @@
 
 #include <time.h>
 
-#define ON 1
-#define OFF 0
+#define ENABLED 1
+#define DISABLED 0
 
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 #define HRES 640
 #define VRES 480
 #define HRES_STR "640"
 #define VRES_STR "480"
-#define NUMBER_FRAMES_DROPPED 8 
-#define NUMBER_FRAMES_KEPT 240
-#define NEGITIVE_IMAGE_MODE OFF
+#define NEGITIVE_IMAGE_MODE ENABLED
+#define OUTPUT_BOTH DISABLED // must have NEGITIVE_IMAGE_MODE ENABLED to work
 #define SATURATION 255
+#define NS_PER_S 1000000000
+#define FPS 10
+#define NUMBER_FRAMES_DROPPED 2*FPS
+#define NUMBER_FRAMES_KEPT 240
 
 // Format is used by a number of functions, so made as a file global
 static struct v4l2_format fmt;
@@ -92,7 +96,8 @@ static int xioctl(int fh, int request, void *arg)
 }
 
 char ppm_header[]="P6\n#9999999999 sec 9999999999 msec \n"HRES_STR" "VRES_STR"\n255\n";
-char ppm_dumpname[]="frames/test0000.ppm";
+char ppm_dumpname[]="frames/norm0000.ppm";
+char ppm_dumpname_transform[]="frames/tran0000.ppm";
 
 static void dump_ppm(const void *p, int size, unsigned int tag, struct timespec *time)
 {
@@ -120,6 +125,32 @@ static void dump_ppm(const void *p, int size, unsigned int tag, struct timespec 
 
     close(dumpfd);
     
+}
+
+static void dump_ppm_transformed(const void *p, int size, unsigned int tag, struct timespec *time){
+    int written, i, total, dumpfd;
+   
+    snprintf(&ppm_dumpname_transform[11], 9, "%04d", tag);
+    strncat(&ppm_dumpname_transform[15], ".ppm", 5);
+    dumpfd = open(ppm_dumpname_transform, O_WRONLY | O_NONBLOCK | O_CREAT, 00666);
+
+    snprintf(&ppm_header[4], 11, "%010d", (int)time->tv_sec);
+    strncat(&ppm_header[14], " sec ", 5);
+    snprintf(&ppm_header[19], 11, "%010d", (int)((time->tv_nsec)/1000000));
+    strncat(&ppm_header[29], " msec \n"HRES_STR" "VRES_STR"\n255\n", 19);
+    written=write(dumpfd, ppm_header, sizeof(ppm_header));
+
+    total=0;
+
+    do
+    {
+        written=write(dumpfd, p, size);
+        total+=written;
+    } while(total < size);
+
+    printf("wrote %d bytes\n", total);
+
+    close(dumpfd);
 }
 
 
@@ -194,21 +225,21 @@ void yuv2rgb(int y, int u, int v, unsigned char *r, unsigned char *g, unsigned c
    if (g1 < 0) g1 = 0;
    if (b1 < 0) b1 = 0;
 
-    #if NEGITIVE_IMAGE_MODE
-    r1 = SATURATION - r1;
-    g1 = SATURATION - g1;
-    b1 = SATURATION - b1;
-    #endif //negitive mode
-
    *r = r1 ;
    *g = g1 ;
    *b = b1 ;
 }
 
+void negitiveImageTransform(unsigned char *r, unsigned char *g, unsigned char *b){
+    *r = SATURATION - *r;
+    *g = SATURATION - *g;
+    *b = SATURATION - *b;
+}
+
 
 // always drop the first frames of a specified amounts
 int framecnt=(-1)*NUMBER_FRAMES_DROPPED;
-unsigned char bigbuffer[(1280*960)];
+unsigned char bigbuffer[(HRES*VRES)];
 
 static void process_image(const void *p, int size)
 {
@@ -224,7 +255,6 @@ static void process_image(const void *p, int size)
     printf("frame %d: ", framecnt);
 
     // This just dumps the frame to a file now, but you could replace with whatever image processing you wish.
-
     if(fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_GREY)
     {
         printf("Dump graymap as-is size %d\n", size);
@@ -243,11 +273,37 @@ static void process_image(const void *p, int size)
             yuv2rgb(y_temp, u_temp, v_temp, &bigbuffer[newi], &bigbuffer[newi+1], &bigbuffer[newi+2]);
             yuv2rgb(y2_temp, u_temp, v_temp, &bigbuffer[newi+3], &bigbuffer[newi+4], &bigbuffer[newi+5]);
         }
-
+        // AQUISITION LOGEND
+        // "Aquisition End at:\t%???\tTotal time:\t%???",???
+        // WRITE BACK LOGSTART
+        // "Write-Back Start at:\t%???",???
+        // dumping code
         if(framecnt > -1) 
         {
+            // if we want to print the normal image
+            #if (NEGITIVE_IMAGE_MODE==0||(NEGITIVE_IMAGE_MODE&&OUTPUT_BOTH))
             dump_ppm(bigbuffer, ((size*6)/4), framecnt, &frame_time);
-            printf("Dump YUYV converted to RGB size %d\n", size);
+            printf("Normal image: Dump YUYV converted to RGB size %d\n", size);
+            #endif //end wanting to print the normal 
+            
+            // if we want to print the negitive image
+            #if NEGITIVE_IMAGE_MODE
+            // run the transform
+            // WRITE BACK LOG PAUSE
+            // TRANSFORM LOGSTART
+            // "Transform Start at:\t%???",???
+            for(i=0, newi=0; i<size; i=i+4, newi=newi+6)
+            {
+                negitiveImageTransform(&bigbuffer[newi], &bigbuffer[newi+1], &bigbuffer[newi+2]);
+                negitiveImageTransform(&bigbuffer[newi+3], &bigbuffer[newi+4], &bigbuffer[newi+5]);
+            }
+            // TRANSFORMLOGEND
+            // "Transform End at:\t%???\tTotal time:\t%???",???
+            // WRITE BACK LOG UNPAUSE
+            // dump the image
+            dump_ppm_transformed(bigbuffer, ((size*6)/4), framecnt, &frame_time);
+            printf("Negitive image: Dump YUYV converted to ~(RGB) size %d\n", size);
+            #endif //end wanting to print the negitive image
         }
     }
 
@@ -309,9 +365,7 @@ static int read_frame(void)
                         return 0;
 
                     case EIO:
-                        /* Could ignore EIO, but drivers should only set for serious errors, although some set for
-                           non-fatal errors too.
-                         */
+                        // Could ignore EIO, but drivers should only set for serious errors, although some set for non-fatal errors too.
                         return 0;
 
 
@@ -383,13 +437,18 @@ static void mainloop(void)
     // 250 million nsec is a 250 msec delay, for 4 fps
     // 1 sec for 1 fps
     //
-    read_delay.tv_sec=1;
-    read_delay.tv_nsec=0;
+    read_delay.tv_sec=0;
+    read_delay.tv_nsec=NS_PER_S/FPS;
 
     count = frame_count;
 
     while (count > 0)
-    {
+    {   
+        // FRAME LOGSTART (start for finidng jitter, actual release - expected release = drift)
+        // log text:
+        // "Frame number: \t%u\t start at time: \t%???", frame_count-count, ???
+        // AQUISITION LOGSTART
+        // "Aquisition Start at: \t%???",???
         for (;;)
         {
             fd_set fds;
@@ -420,17 +479,25 @@ static void mainloop(void)
 
             if (read_frame())
             {
+                // WRITE BACK LOGEND
+                // "Write-Back End at:\t%???\tTotal time:\t%???",???
                 if(nanosleep(&read_delay, &time_error) != 0)
                     perror("nanosleep");
                 else
                     printf("time_error.tv_sec=%ld, time_error.tv_nsec=%ld\n", time_error.tv_sec, time_error.tv_nsec);
 
                 count--;
+                // FRAME LOGEND
                 break;
             }
+            // WRITE BACK LOGEND
+            // ALL LOGEND w/ ERROR
 
             /* EAGAIN - continue select loop unless count done. */
-            if(count <= 0) break;
+            if(count <= 0){
+                
+                break;
+            }
         }
 
         if(count <= 0) break;
@@ -795,7 +862,6 @@ static void init_device(void)
     }
 }
 
-
 static void close_device(void)
 {
         if (-1 == close(fd))
@@ -863,6 +929,12 @@ long_options[] = {
 
 int main(int argc, char **argv)
 {
+    // set to mode SCHED FIFO
+    struct sched_param param_main;
+    param_main.sched_priority = 1;
+    sched_setscheduler(0,SCHED_FIFO, &param_main);
+
+    //OG code:
     if(argc > 1)
         dev_name = argv[1];
     else
@@ -873,8 +945,7 @@ int main(int argc, char **argv)
         int idx;
         int c;
 
-        c = getopt_long(argc, argv,
-                    short_options, long_options, &idx);
+        c = getopt_long(argc, argv, short_options, long_options, &idx);
 
         if (-1 == c)
             break;
