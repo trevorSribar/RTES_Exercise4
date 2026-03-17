@@ -25,6 +25,7 @@
 #include <fcntl.h>              /* low-level i/o */
 #include <unistd.h>
 #include <errno.h>
+#include <syslog.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/time.h>
@@ -43,13 +44,22 @@
 #define VRES 480
 #define HRES_STR "640"
 #define VRES_STR "480"
-#define NEGITIVE_IMAGE_MODE ENABLED
+#define NEGITIVE_IMAGE_MODE DISABLEDf
 #define OUTPUT_BOTH DISABLED // must have NEGITIVE_IMAGE_MODE ENABLED to work
 #define SATURATION 255
 #define NS_PER_S 1000000000
 #define FPS 10
 #define NUMBER_FRAMES_DROPPED 2*FPS
 #define NUMBER_FRAMES_KEPT 240
+
+//
+// Globals
+//
+struct timespec frame_start, frame_end;
+struct timespec acquisition_start, acquisition_end;
+struct timespec transform_start, transform_end;
+struct timespec writeBack_start, writeBack_end;
+struct timespec writeBack_pause_start, writeBack_pause_end;
 
 // Format is used by a number of functions, so made as a file global
 static struct v4l2_format fmt;
@@ -78,7 +88,8 @@ static int              frame_count = (NUMBER_FRAMES_KEPT+NUMBER_FRAMES_DROPPED)
 
 static void errno_exit(const char *s)
 {
-        fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
+        //fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
+        syslog(LOG_PERROR, "%s error %d, %s\n", s, errno, strerror(errno));
         exit(EXIT_FAILURE);
 }
 
@@ -121,7 +132,8 @@ static void dump_ppm(const void *p, int size, unsigned int tag, struct timespec 
         total+=written;
     } while(total < size);
 
-    printf("wrote %d bytes\n", total);
+    //printf("wrote %d bytes\n", total);
+    syslog(LOG_INFO, "Normal: wrote %d bytes\n", total);
 
     close(dumpfd);
     
@@ -148,7 +160,8 @@ static void dump_ppm_transformed(const void *p, int size, unsigned int tag, stru
         total+=written;
     } while(total < size);
 
-    printf("wrote %d bytes\n", total);
+    //printf("wrote %d bytes\n", total);
+    syslog(LOG_INFO, "Transform: wrote %d bytes\n", total);
 
     close(dumpfd);
 }
@@ -179,12 +192,17 @@ static void dump_pgm(const void *p, int size, unsigned int tag, struct timespec 
         total+=written;
     } while(total < size);
 
-    printf("wrote %d bytes\n", total);
+    //printf("wrote %d bytes\n", total);
+    syslog(LOG_INFO, "wrote %d bytes\n", total);
 
     close(dumpfd);
     
 }
 
+int get_elapsed_time_usec(struct timespec *start, struct timespec *end)
+{
+    return (int)(((end->tv_sec - start->tv_sec) * 1000000) + ((end->tv_nsec - start->tv_nsec) / 1000));
+}
 // This is probably the most acceptable conversion from camera YUYV to RGB
 //
 // Wikipedia has a good discussion on the details of various conversions and cites good references:
@@ -239,7 +257,7 @@ void negitiveImageTransform(unsigned char *r, unsigned char *g, unsigned char *b
 
 // always drop the first frames of a specified amounts
 int framecnt=(-1)*NUMBER_FRAMES_DROPPED;
-unsigned char bigbuffer[(HRES*VRES)];
+unsigned char bigbuffer[(1280*960)];
 
 static void process_image(const void *p, int size)
 {
@@ -252,18 +270,19 @@ static void process_image(const void *p, int size)
     clock_gettime(CLOCK_REALTIME, &frame_time);    
 
     framecnt++;
-    printf("frame %d: ", framecnt);
+    //printf("frame %d: ", framecnt);
+    syslog(LOG_INFO, "frame %d: ", framecnt);
 
     // This just dumps the frame to a file now, but you could replace with whatever image processing you wish.
     if(fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_GREY)
     {
-        printf("Dump graymap as-is size %d\n", size);
+        //printf("Dump graymap as-is size %d\n", size);
+        syslog(LOG_INFO, "Dump graymap as-is size %d\n", size);
         dump_pgm(p, size, framecnt, &frame_time);
     }
 
     else if(fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_YUYV)
     {
-
         // we will always be in RGM mode, so we remove defines from the fileset
         // Pixels are YU and YV alternating, so YUYV which is 4 bytes
         // We want RGB, so RGBRGB which is 6 bytes
@@ -274,51 +293,59 @@ static void process_image(const void *p, int size)
             yuv2rgb(y2_temp, u_temp, v_temp, &bigbuffer[newi+3], &bigbuffer[newi+4], &bigbuffer[newi+5]);
         }
         // AQUISITION LOGEND
-        // "Aquisition End at:\t%???\tTotal time:\t%???",???
+        clock_gettime(CLOCK_MONOTONIC, &acquisition_end);
+        syslog(LOG_INFO, "Aquisition End for frame %d:\telapsed time:\t%d usec\n", framecnt, get_elapsed_time_usec(&acquisition_start,&acquisition_end));
         // WRITE BACK LOGSTART
-        // "Write-Back Start at:\t%???",???
+        clock_gettime(CLOCK_MONOTONIC, &writeBack_start);
         // dumping code
         if(framecnt > -1) 
         {
             // if we want to print the normal image
-            #if (NEGITIVE_IMAGE_MODE==0||(NEGITIVE_IMAGE_MODE&&OUTPUT_BOTH))
+            #if (NEGITIVE_IMAGE_MODE==0||(NEGITIVE_IMAGE_MODE==1&&OUTPUT_BOTH==1))
             dump_ppm(bigbuffer, ((size*6)/4), framecnt, &frame_time);
-            printf("Normal image: Dump YUYV converted to RGB size %d\n", size);
+            //printf("Dump YUYV converted to RGB size %d\n", size);
+            syslog(LOG_INFO, "Normal: Dump YUYV converted to RGB size %d\n", size);
             #endif //end wanting to print the normal 
             
             // if we want to print the negitive image
             #if NEGITIVE_IMAGE_MODE
             // run the transform
             // WRITE BACK LOG PAUSE
+            clock_gettime(CLOCK_MONOTONIC,&writeBack_pause_start);
             // TRANSFORM LOGSTART
-            // "Transform Start at:\t%???",???
+            clock_gettime(CLOCK_MONOTONIC,&transform_start);
             for(i=0, newi=0; i<size; i=i+4, newi=newi+6)
             {
                 negitiveImageTransform(&bigbuffer[newi], &bigbuffer[newi+1], &bigbuffer[newi+2]);
                 negitiveImageTransform(&bigbuffer[newi+3], &bigbuffer[newi+4], &bigbuffer[newi+5]);
             }
             // TRANSFORMLOGEND
-            // "Transform End at:\t%???\tTotal time:\t%???",???
+            clock_gettime(CLOCK_MONOTONIC,&transform_end);
+            syslog(LOG_INFO, "Transform End for frame %d:\telapsed time:\t%d usec\n", framecnt, get_elapsed_time_usec(&transform_start,&transform_end));
             // WRITE BACK LOG UNPAUSE
+            clock_gettime(CLOCK_MONOTONIC,&writeBack_pause_end);
             // dump the image
             dump_ppm_transformed(bigbuffer, ((size*6)/4), framecnt, &frame_time);
-            printf("Negitive image: Dump YUYV converted to ~(RGB) size %d\n", size);
+            //printf("Dump YUYV converted to RGB size %d\n", size);
+            syslog(LOG_INFO, "Negative: YUYV converted to RGB size %d\n", size);
             #endif //end wanting to print the negitive image
         }
     }
 
     else if(fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_RGB24)
     {
-        printf("Dump RGB as-is size %d\n", size);
+        //printf("Dump RGB as-is size %d\n", size);
+        syslog(LOG_INFO, "Dump RGB as-is size %d\n", size);
         dump_ppm(p, size, framecnt, &frame_time);
     }
     else
     {
-        printf("ERROR - unknown dump format\n");
+        // printf("ERROR - unknown dump format\n");
+        syslog(LOG_PERROR, "ERROR - unknown dump format\n");
     }
 
-    fflush(stderr);
-    fflush(stdout);
+    // fflush(stderr);
+    // fflush(stdout);
 }
 
 
@@ -445,10 +472,11 @@ static void mainloop(void)
     while (count > 0)
     {   
         // FRAME LOGSTART (start for finidng jitter, actual release - expected release = drift)
-        // log text:
+        clock_gettime(CLOCK_MONOTONIC,&frame_start);
+        syslog(LOG_INFO, "Frame start for frame %d:\tStart at time:\t%d s\t%dns\n", frame_count-count, (int)frame_start.tv_sec, (int)frame_start.tv_nsec);
         // "Frame number: \t%u\t start at time: \t%???", frame_count-count, ???
         // AQUISITION LOGSTART
-        // "Aquisition Start at: \t%???",???
+        clock_gettime(CLOCK_MONOTONIC,&acquisition_start);
         for (;;)
         {
             fd_set fds;
@@ -473,25 +501,36 @@ static void mainloop(void)
 
             if (0 == r)
             {
-                fprintf(stderr, "select timeout\n");
+                //fprintf(stderr, "select timeout\n");
+                syslog(LOG_PERROR, "select timeout\n");
                 exit(EXIT_FAILURE);
             }
 
             if (read_frame())
             {
                 // WRITE BACK LOGEND
+                clock_gettime(CLOCK_MONOTONIC,&writeBack_end);
+                #if NEGITIVE_IMAGE_MODE
+                syslog(LOG_INFO, "Write-Back End for frame %d:\telapsed time:\t%d usec\n", frame_count-count, get_elapsed_time_usec(&writeBack_start,&writeBack_end) - get_elapsed_time_usec(&writeBack_pause_start,&writeBack_pause_end));
+                #else
+                syslog(LOG_INFO, "Write-Back End for frame %d:\telapsed time:\t%d usec\n", frame_count-count, get_elapsed_time_usec(&writeBack_start,&writeBack_end));
+                #endif
+
                 // "Write-Back End at:\t%???\tTotal time:\t%???",???
                 if(nanosleep(&read_delay, &time_error) != 0)
-                    perror("nanosleep");
+                    syslog(LOG_INFO, "nanosleep");
                 else
-                    printf("time_error.tv_sec=%ld, time_error.tv_nsec=%ld\n", time_error.tv_sec, time_error.tv_nsec);
+                    syslog(LOG_INFO, "time_error.tv_sec=%ld, time_error.tv_nsec=%ld\n", time_error.tv_sec, time_error.tv_nsec);
 
                 count--;
                 // FRAME LOGEND
+                clock_gettime(CLOCK_MONOTONIC,&frame_end);
+                syslog(LOG_INFO, "frame number %d complete:\telapsed time:\t%d usec\n", frame_count-count, get_elapsed_time_usec(&frame_start,&frame_end));
                 break;
             }
             // WRITE BACK LOGEND
-            // ALL LOGEND w/ ERROR
+            syslog(LOG_INFO, "Write-Back End for frame %d:\telapsed time:\t%d usec\t AN ERROR HAS OCCURED\n", frame_count-count, get_elapsed_time_usec(&writeBack_start,&writeBack_end));
+            syslog(LOG_INFO, "frame number %d complete:\telapsed time:\t%d usec\t AN ERROR HAS OCCURED\n", frame_count-count, get_elapsed_time_usec(&frame_start,&frame_end));
 
             /* EAGAIN - continue select loop unless count done. */
             if(count <= 0){
@@ -537,7 +576,8 @@ static void start_capturing(void)
         case IO_METHOD_MMAP:
                 for (i = 0; i < n_buffers; ++i) 
                 {
-                        printf("allocated buffer %d\n", i);
+                        //printf("allocated buffer %d\n", i);
+                        syslog(LOG_INFO, "allocated buffer %d\n", i);
                         struct v4l2_buffer buf;
 
                         CLEAR(buf);
@@ -604,7 +644,8 @@ static void init_read(unsigned int buffer_size)
 
         if (!buffers) 
         {
-                fprintf(stderr, "Out of memory\n");
+                //fprintf(stderr, "Out of memory\n");
+                syslog(LOG_PERROR, "Out of memory\n");
                 exit(EXIT_FAILURE);
         }
 
@@ -613,7 +654,8 @@ static void init_read(unsigned int buffer_size)
 
         if (!buffers[0].start) 
         {
-                fprintf(stderr, "Out of memory\n");
+                //fprintf(stderr, "Out of memory\n");
+                syslog(LOG_PERROR, "Out of memory\n");
                 exit(EXIT_FAILURE);
         }
 }
@@ -632,7 +674,9 @@ static void init_mmap(void)
         {
                 if (EINVAL == errno) 
                 {
-                        fprintf(stderr, "%s does not support "
+                        //fprintf(stderr, "%s does not support "
+                        //         "memory mapping\n", dev_name);
+                        syslog(LOG_PERROR, "%s does not support "
                                  "memory mapping\n", dev_name);
                         exit(EXIT_FAILURE);
                 } else 
@@ -643,7 +687,8 @@ static void init_mmap(void)
 
         if (req.count < 2) 
         {
-                fprintf(stderr, "Insufficient buffer memory on %s\n", dev_name);
+                //fprintf(stderr, "Insufficient buffer memory on %s\n", dev_name);
+                syslog(LOG_PERROR, "Insufficient buffer memory on %s\n", dev_name);
                 exit(EXIT_FAILURE);
         }
 
@@ -651,7 +696,8 @@ static void init_mmap(void)
 
         if (!buffers) 
         {
-                fprintf(stderr, "Out of memory\n");
+                //fprintf(stderr, "Out of memory\n");
+                syslog(LOG_PERROR, "Out of memory\n");
                 exit(EXIT_FAILURE);
         }
 
@@ -692,8 +738,10 @@ static void init_userp(unsigned int buffer_size)
 
         if (-1 == xioctl(fd, VIDIOC_REQBUFS, &req)) {
                 if (EINVAL == errno) {
-                        fprintf(stderr, "%s does not support "
-                                 "user pointer i/o\n", dev_name);
+                        //fprintf(stderr, "%s does not support "
+                        //         "memory mapping\n", dev_name);
+                        syslog(LOG_PERROR, "%s does not support "
+                                 "memory mapping\n", dev_name);
                         exit(EXIT_FAILURE);
                 } else {
                         errno_exit("VIDIOC_REQBUFS");
@@ -703,7 +751,8 @@ static void init_userp(unsigned int buffer_size)
         buffers = calloc(4, sizeof(*buffers));
 
         if (!buffers) {
-                fprintf(stderr, "Out of memory\n");
+                //fprintf(stderr, "Out of memory\n");
+                syslog(LOG_PERROR, "Out of memory\n");
                 exit(EXIT_FAILURE);
         }
 
@@ -712,7 +761,8 @@ static void init_userp(unsigned int buffer_size)
                 buffers[n_buffers].start = malloc(buffer_size);
 
                 if (!buffers[n_buffers].start) {
-                        fprintf(stderr, "Out of memory\n");
+                        //fprintf(stderr, "Out of memory\n");
+                        syslog(LOG_PERROR, "Out of memory\n");
                         exit(EXIT_FAILURE);
                 }
         }
@@ -728,7 +778,9 @@ static void init_device(void)
     if (-1 == xioctl(fd, VIDIOC_QUERYCAP, &cap))
     {
         if (EINVAL == errno) {
-            fprintf(stderr, "%s is no V4L2 device\n",
+            //fprintf(stderr, "%s is no V4L2 device\n",
+            //         dev_name);
+            syslog(LOG_PERROR, "%s is no V4L2 device\n",
                      dev_name);
             exit(EXIT_FAILURE);
         }
@@ -740,7 +792,9 @@ static void init_device(void)
 
     if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE))
     {
-        fprintf(stderr, "%s is no video capture device\n",
+        //fprintf(stderr, "%s is no video capture device\n",
+        //         dev_name);
+        syslog(LOG_PERROR, "%s is no video capture device\n",
                  dev_name);
         exit(EXIT_FAILURE);
     }
@@ -750,7 +804,7 @@ static void init_device(void)
         case IO_METHOD_READ:
             if (!(cap.capabilities & V4L2_CAP_READWRITE))
             {
-                fprintf(stderr, "%s does not support read i/o\n",
+                syslog(LOG_PERROR, "%s does not support read i/o\n",
                          dev_name);
                 exit(EXIT_FAILURE);
             }
@@ -760,7 +814,7 @@ static void init_device(void)
         case IO_METHOD_USERPTR:
             if (!(cap.capabilities & V4L2_CAP_STREAMING))
             {
-                fprintf(stderr, "%s does not support streaming i/o\n",
+                syslog(LOG_PERROR, "%s does not support streaming i/o\n",
                          dev_name);
                 exit(EXIT_FAILURE);
             }
@@ -806,7 +860,8 @@ static void init_device(void)
 
     if (force_format)
     {
-        printf("FORCING FORMAT\n");
+        //printf("FORCING FORMAT\n");
+        syslog(LOG_INFO, "FORCING FORMAT\n");
         fmt.fmt.pix.width       = HRES;
         fmt.fmt.pix.height      = VRES;
 
@@ -832,7 +887,8 @@ static void init_device(void)
     }
     else
     {
-        printf("ASSUMING FORMAT\n");
+        //printf("ASSUMING FORMAT\n");
+        syslog(LOG_INFO, "ASSUMING FORMAT\n");
         /* Preserve original settings as set by v4l2-ctl for example */
         if (-1 == xioctl(fd, VIDIOC_G_FMT, &fmt))
                     errno_exit("VIDIOC_G_FMT");
@@ -875,20 +931,20 @@ static void open_device(void)
         struct stat st;
 
         if (-1 == stat(dev_name, &st)) {
-                fprintf(stderr, "Cannot identify '%s': %d, %s\n",
+                syslog(LOG_PERROR, "Cannot identify '%s': %d, %s\n",
                          dev_name, errno, strerror(errno));
                 exit(EXIT_FAILURE);
         }
 
         if (!S_ISCHR(st.st_mode)) {
-                fprintf(stderr, "%s is no device\n", dev_name);
+                syslog(LOG_PERROR, "%s is no device\n", dev_name);
                 exit(EXIT_FAILURE);
         }
 
         fd = open(dev_name, O_RDWR /* required */ | O_NONBLOCK, 0);
 
         if (-1 == fd) {
-                fprintf(stderr, "Cannot open '%s': %d, %s\n",
+                syslog(LOG_PERROR, "Cannot open '%s': %d, %s\n",
                          dev_name, errno, strerror(errno));
                 exit(EXIT_FAILURE);
         }
@@ -1008,6 +1064,5 @@ int main(int argc, char **argv)
     stop_capturing();
     uninit_device();
     close_device();
-    fprintf(stderr, "\n");
     return 0;
 }
